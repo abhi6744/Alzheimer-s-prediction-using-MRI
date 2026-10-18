@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+@theme {
+  --color-neuro-50: #f4f7fb;
+  --color-neuro-100: #e9f0f7;
+  --color-neuro-200: #cddbe8;
+  --color-neuro-300: #a4c0d6;
+  --color-neuro-400: #73a0c1;
+  --color-neuro-500: #4f82a9;
+  --color-neuro-600: #3a688d;
+  --color-neuro-700: #2f5473;
+  --color-neuro-800: #284762;
+  --color-neuro-900: #233c52;
+  
+  --color-neuro-blue: #2563eb;
+  --color-neuro-violet: #7c3aed;
+  --color-neuro-cyan: #0891b2;
+  --font-sans: 'Inter', sans-serif;
+}
+
+@layer base {
+  body {
+    @apply bg-neuro-50 text-slate-800 font-sans antialiased min-h-screen;
+  }
+}

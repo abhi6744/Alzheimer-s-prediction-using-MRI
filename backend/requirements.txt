@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+python-multipart
+pydantic
+numpy
+pandas
+nibabel
+antspyx
+antspynet
+Pillow
+tensorflow
+shap
+lime
+scikit-image
+matplotlib
+opencv-python-headless
