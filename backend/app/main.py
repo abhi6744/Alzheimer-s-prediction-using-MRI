@@ -25,6 +25,17 @@ app.include_router(upload.router, prefix="/api", tags=["Upload"])
 app.include_router(preprocess.router, prefix="/api", tags=["Preprocess"])
 app.include_router(predict.router, prefix="/api", tags=["Predict"])
 
+@app.get("/api/download")
+async def download_file(path: str):
+    file_path = Path(path)
+    if not file_path.exists():
+        return FileResponse(file_path, status_code=404)
+    return FileResponse(
+        file_path, 
+        media_type='application/octet-stream', 
+        filename=file_path.name
+    )
+
 # Mount Frontend
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 

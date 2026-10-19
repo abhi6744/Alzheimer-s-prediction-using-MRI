@@ -1,189 +1,323 @@
 import { useState } from 'react';
 import axios from 'axios';
-import { Brain, Activity, Download, ArrowRight, Loader2, AlertTriangle } from 'lucide-react';
-import UploadDropzone from './components/UploadDropzone';
-import ResultsPanel from './components/ResultsPanel';
-import MedicalDisclaimer from './components/MedicalDisclaimer';
+import { Menu, AlertTriangle, X } from 'lucide-react';
+import { Sidebar } from './components/Sidebar';
+import type { NavPage } from './components/Sidebar';
+import { HomePage } from './components/HomePage';
+import { UploadPage } from './components/UploadPage';
+import { PreprocessingPage } from './components/PreprocessingPage';
+import { PredictionPage } from './components/PredictionPage';
+import type { PredictionResultData } from './components/PredictionPage';
+import { XaiPage } from './components/XaiPage';
+import { HistoryPage } from './components/HistoryPage';
+import { AboutPage } from './components/AboutPage';
 
-// Use relative URL for API so it works when served from FastAPI
 const API_BASE = '/api';
 
-function App() {
-  const [step, setStep] = useState<'UPLOAD' | 'PROCESSING' | 'PREPROCESSED' | 'ANALYZING' | 'RESULTS'>('UPLOAD');
+interface PreprocessedData {
+  slice_png_path: string;
+  preprocessed_nii_path?: string;
+  preview_base64?: string;
+  filename?: string;
+}
+
+interface HistoryEntry {
+  id: string;
+  filename: string;
+  timestamp: string;
+  prediction: PredictionResultData;
+  previewBase64?: string;
+  preprocessedNiiPath?: string;
+}
+
+export function App() {
+  const [currentPage, setCurrentPage] = useState<NavPage>('home');
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Uploaded and preprocessed state
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
   
-  const [preprocessedData, setPreprocessedData] = useState<{
-    slice_png_path: string;
-    preprocessed_nii_path?: string;
-    preview_base64?: string;
-  } | null>(null);
+  // 3D Preprocessing state
+  const [isPreprocessing, setIsPreprocessing] = useState(false);
+  const [preprocessStep, setPreprocessStep] = useState<number>(1);
+  const [preprocessPercent, setPreprocessPercent] = useState<number>(0);
+  const [preprocessStatus, setPreprocessStatus] = useState<string>('');
+  const [preprocessedData, setPreprocessedData] = useState<PreprocessedData | null>(null);
 
-  const [predictionData, setPredictionData] = useState<any>(null);
+  // Prediction & XAI state
+  const [, setIsPredicting] = useState(false);
+  const [predictionData, setPredictionData] = useState<PredictionResultData | null>(null);
 
-  const resetState = () => {
-    setStep('UPLOAD');
+  // Session History
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+
+  const handleFileSelect = (file: File) => {
+    setSelectedFile(file);
     setError(null);
-    setPreprocessedData(null);
-    setPredictionData(null);
   };
 
-  const handleFileSelect = async (selectedFile: File) => {
-    resetState();
+  const handleClearFile = () => {
+    setSelectedFile(null);
     setError(null);
-    setStep('PROCESSING');
+  };
+
+  const handleStartProcess = async () => {
+    if (!selectedFile) return;
+
+    setError(null);
+    setIsUploading(true);
 
     try {
       const formData = new FormData();
       formData.append('file', selectedFile);
-      
+
       const uploadRes = await axios.post(`${API_BASE}/upload`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
-      
-      const { path, is_nifti } = uploadRes.data;
 
-      const prepRes = await axios.post(`${API_BASE}/preprocess`, {
-        file_path: path,
-        is_nifti: is_nifti
-      });
+      const { path, is_nifti, filename } = uploadRes.data;
+      setIsUploading(false);
 
-      setPreprocessedData(prepRes.data);
-      
       if (is_nifti) {
-        setStep('PREPROCESSED');
+        // Switch to Preprocess page with live step simulation during backend call
+        setCurrentPage('preprocess');
+        setIsPreprocessing(true);
+        setPreprocessStep(2);
+        setPreprocessPercent(25);
+        setPreprocessStatus('Performing skull stripping (brain extraction)...');
+
+        const stepTimer1 = setTimeout(() => {
+          setPreprocessStep(3);
+          setPreprocessPercent(55);
+          setPreprocessStatus('Standardizing intensity normalization...');
+        }, 1500);
+
+        const stepTimer2 = setTimeout(() => {
+          setPreprocessStep(4);
+          setPreprocessPercent(85);
+          setPreprocessStatus('Registering volume to MNI template space...');
+        }, 3000);
+
+        try {
+          const prepRes = await axios.post(`${API_BASE}/preprocess`, {
+            file_path: path,
+            is_nifti: true
+          });
+
+          clearTimeout(stepTimer1);
+          clearTimeout(stepTimer2);
+
+          setPreprocessStep(5);
+          setPreprocessPercent(100);
+          setPreprocessStatus('Preprocessing completed successfully');
+          setIsPreprocessing(false);
+
+          const fullPrepData: PreprocessedData = {
+            ...prepRes.data,
+            filename: filename || selectedFile.name
+          };
+          setPreprocessedData(fullPrepData);
+
+        } catch (err: any) {
+          clearTimeout(stepTimer1);
+          clearTimeout(stepTimer2);
+          setIsPreprocessing(false);
+          throw err;
+        }
+
       } else {
-        runAnalysis(prepRes.data.slice_png_path);
+        // PNG 2D Slice uploaded directly
+        const prepRes = await axios.post(`${API_BASE}/preprocess`, {
+          file_path: path,
+          is_nifti: false
+        });
+
+        const fullPrepData: PreprocessedData = {
+          slice_png_path: prepRes.data.slice_png_path,
+          filename: filename || selectedFile.name
+        };
+        setPreprocessedData(fullPrepData);
+
+        // Run prediction immediately
+        await runPrediction(prepRes.data.slice_png_path, filename || selectedFile.name);
       }
 
     } catch (err: any) {
       console.error(err);
-      setError(err.response?.data?.detail || err.message || "An error occurred during upload/preprocessing.");
-      setStep('UPLOAD');
+      setIsUploading(false);
+      setIsPreprocessing(false);
+      setError(err.response?.data?.detail || err.message || "An error occurred during processing.");
     }
   };
 
-  const runAnalysis = async (slicePath: string) => {
-    setStep('ANALYZING');
+  const runPrediction = async (slicePath: string, currentFilename?: string) => {
+    setIsPredicting(true);
     setError(null);
+    setCurrentPage('prediction');
+
     try {
       const res = await axios.post(`${API_BASE}/predict`, { slice_png_path: slicePath });
-      setPredictionData(res.data);
-      setStep('RESULTS');
+      const pred: PredictionResultData = res.data;
+      setPredictionData(pred);
+      setIsPredicting(false);
+
+      // Save to Session History
+      const newEntry: HistoryEntry = {
+        id: Date.now().toString(),
+        filename: currentFilename || preprocessedData?.filename || selectedFile?.name || 'MRI Scan',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        prediction: pred,
+        previewBase64: preprocessedData?.preview_base64,
+        preprocessedNiiPath: preprocessedData?.preprocessed_nii_path
+      };
+
+      setHistory(prev => [newEntry, ...prev]);
+
     } catch (err: any) {
       console.error(err);
+      setIsPredicting(false);
       setError(err.response?.data?.detail || err.message || "An error occurred during prediction.");
-      setStep(preprocessedData?.preprocessed_nii_path ? 'PREPROCESSED' : 'UPLOAD');
     }
+  };
+
+  const handleDownloadNifti = () => {
+    if (!preprocessedData?.preprocessed_nii_path) return;
+    // Download preprocessed NIFTI file
+    const link = document.createElement('a');
+    link.href = `${API_BASE}/download?path=${encodeURIComponent(preprocessedData.preprocessed_nii_path)}`;
+    link.download = preprocessedData.filename 
+      ? `preprocessed_${preprocessedData.filename}`
+      : 'preprocessed_mri.nii.gz';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleSelectHistoryItem = (item: HistoryEntry) => {
+    setPredictionData(item.prediction);
+    if (item.previewBase64) {
+      setPreprocessedData(prev => ({
+        slice_png_path: prev?.slice_png_path || '',
+        preview_base64: item.previewBase64,
+        filename: item.filename,
+        preprocessed_nii_path: item.preprocessedNiiPath
+      }));
+    }
+    setCurrentPage('prediction');
+  };
+
+  const handleResetForNewScan = () => {
+    setSelectedFile(null);
+    setError(null);
+    setCurrentPage('upload');
   };
 
   return (
-    <div className="min-h-screen pb-20">
-      <header className="border-b border-neuro-200 bg-white/80 backdrop-blur-md sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center space-x-3 cursor-pointer" onClick={resetState}>
-            <div className="p-2 bg-neuro-blue/10 rounded-lg">
-              <Brain className="w-6 h-6 text-neuro-blue" />
-            </div>
-            <h1 className="text-xl font-bold tracking-tight text-slate-900">Neuro<span className="text-neuro-blue">Detect</span> AD</h1>
-          </div>
-        </div>
-      </header>
+    <div className="min-h-screen bg-[#f4f7fb] text-slate-800 flex flex-col md:flex-row font-sans antialiased">
+      {/* Persistent Left Sidebar */}
+      <Sidebar
+        currentPage={currentPage}
+        onNavigate={(page) => {
+          setCurrentPage(page);
+          setError(null);
+        }}
+        isOpenMobile={isMobileSidebarOpen}
+        onToggleMobile={() => setIsMobileSidebarOpen(prev => !prev)}
+      />
 
-      <main className="max-w-6xl mx-auto px-6 pt-12">
-        {step === 'UPLOAD' && (
-          <div className="text-center max-w-3xl mx-auto mb-12 animate-in fade-in slide-in-from-bottom-4 duration-1000">
-            <div className="inline-flex items-center space-x-2 bg-neuro-100 border border-neuro-200 px-4 py-1.5 rounded-full text-sm text-neuro-cyan mb-6">
-              <Activity className="w-4 h-4" />
-              <span>Ensemble Deep Learning + XAI</span>
-            </div>
-            <h2 className="text-4xl md:text-5xl font-extrabold text-slate-900 tracking-tight leading-tight mb-6">
-              Alzheimer's Disease <br/><span className="text-transparent bg-clip-text bg-gradient-to-r from-neuro-blue to-neuro-violet">Detection & Analysis</span>
-            </h2>
-            <p className="text-lg text-slate-500">
-              Upload an MRI scan to predict the likelihood of Alzheimer's Disease (AD) versus Cognitively Normal (CN). Powered by a multi-branch neural network ensemble with SHAP, LIME, and Grad-CAM++ explanations.
-            </p>
-          </div>
-        )}
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Mobile Header Bar */}
+        <header className="md:hidden flex items-center justify-between px-5 py-4 bg-white border-b border-[#e2eaf4] sticky top-0 z-20">
+          <button
+            onClick={() => setIsMobileSidebarOpen(true)}
+            className="p-2 -ml-2 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+            aria-label="Open navigation menu"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <span className="font-bold text-sm text-[#0f2445]">Alzheimer's Detection</span>
+          <div className="w-5" />
+        </header>
 
-        {error && (
-          <div className="max-w-2xl mx-auto mb-8 bg-red-900/30 border border-red-500/50 text-red-200 px-4 py-3 rounded-lg flex items-center">
-             <AlertTriangle className="w-5 h-5 mr-3 flex-shrink-0" />
-             <p>{error}</p>
-          </div>
-        )}
-
-        <div className="max-w-4xl mx-auto">
-          {(step === 'UPLOAD' || step === 'PROCESSING') && (
-            <UploadDropzone onFileSelect={handleFileSelect} isLoading={step === 'PROCESSING'} />
-          )}
-
-          {step === 'PROCESSING' && (
-            <div className="mt-8 flex flex-col items-center justify-center space-y-4 text-neuro-blue">
-              <Loader2 className="w-10 h-10 animate-spin" />
-              <p className="font-medium animate-pulse">Running 3D Preprocessing Pipeline (Brain Extraction, SyN Registration)...</p>
-            </div>
-          )}
-
-          {step === 'PREPROCESSED' && preprocessedData && (
-            <div className="mt-12 p-8 bg-neuro-100 border border-neuro-200 rounded-xl shadow-xl animate-in fade-in">
-              <div className="flex flex-col md:flex-row items-center justify-between gap-8">
-                <div className="flex-1">
-                  <h3 className="text-2xl font-bold text-slate-900 mb-2">Preprocessing Complete</h3>
-                  <p className="text-slate-500 mb-6">
-                    The 3D MRI volume has been skull-stripped, registered to the MNI152 template, normalized, and the middle axial slice has been extracted for analysis.
-                  </p>
-                  
-                  <div className="flex flex-col sm:flex-row gap-4">
-                    <button className="flex items-center justify-center px-6 py-3 bg-white border border-neuro-200 hover:border-neuro-500 rounded-lg text-slate-700 transition-colors">
-                      <Download className="w-4 h-4 mr-2" />
-                      Download 3D MRI
-                    </button>
-                    <button 
-                      onClick={() => runAnalysis(preprocessedData.slice_png_path)}
-                      className="flex items-center justify-center px-6 py-3 bg-neuro-blue hover:bg-blue-600 rounded-lg text-slate-900 font-medium transition-colors shadow-lg shadow-blue-500/20"
-                    >
-                      Run AD Prediction
-                      <ArrowRight className="w-4 h-4 ml-2" />
-                    </button>
-                  </div>
-                </div>
-
-                {preprocessedData.preview_base64 && (
-                  <div className="w-48 h-48 rounded-lg overflow-hidden border border-neuro-200 bg-black flex-shrink-0 relative group">
-                    <img src={`data:image/png;base64,${preprocessedData.preview_base64}`} alt="Extracted Slice" className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                      <span className="text-xs font-medium uppercase tracking-widest text-slate-900">Middle Slice</span>
-                    </div>
-                  </div>
-                )}
+        {/* Dynamic Page Views */}
+        <main className="flex-1 p-6 sm:p-8 lg:p-10 max-w-7xl w-full mx-auto">
+          {/* Error Banner */}
+          {error && (
+            <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs sm:text-sm flex items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="w-5 h-5 flex-shrink-0 text-red-500" />
+                <span>{error}</span>
               </div>
+              <button onClick={() => setError(null)} className="text-red-400 hover:text-red-700">
+                <X className="w-4 h-4" />
+              </button>
             </div>
           )}
 
-          {step === 'ANALYZING' && (
-            <div className="mt-12 flex flex-col items-center justify-center space-y-4 text-neuro-violet">
-              <Loader2 className="w-10 h-10 animate-spin" />
-              <p className="font-medium animate-pulse">Running Ensemble Inference & Generating XAI Overlays...</p>
-            </div>
+          {currentPage === 'home' && (
+            <HomePage onNavigate={(page) => setCurrentPage(page)} />
           )}
 
-          {step === 'RESULTS' && predictionData && (
-            <>
-               <ResultsPanel prediction={predictionData} originalImageBase64={preprocessedData?.preview_base64} />
-               
-               <div className="mt-8 flex justify-center">
-                 <button 
-                   onClick={resetState}
-                   className="px-6 py-2 border border-neuro-200 hover:bg-neuro-100 rounded-lg text-slate-600 transition-colors"
-                 >
-                   Analyze Another Scan
-                 </button>
-               </div>
-            </>
+          {currentPage === 'upload' && (
+            <UploadPage
+              onFileSelected={handleFileSelect}
+              isLoading={isUploading}
+              selectedFile={selectedFile}
+              onClearFile={handleClearFile}
+              onStartProcess={handleStartProcess}
+            />
           )}
-        </div>
-        <MedicalDisclaimer />
-      </main>
+
+          {currentPage === 'preprocess' && (
+            <PreprocessingPage
+              isProcessing={isPreprocessing}
+              progressStep={preprocessStep}
+              progressPercent={preprocessPercent}
+              statusText={preprocessStatus}
+              preprocessedData={preprocessedData}
+              onDownloadNifti={handleDownloadNifti}
+              onRunPrediction={() => {
+                if (preprocessedData?.slice_png_path) {
+                  runPrediction(preprocessedData.slice_png_path, preprocessedData.filename);
+                }
+              }}
+            />
+          )}
+
+          {currentPage === 'prediction' && (
+            <PredictionPage
+              prediction={predictionData}
+              originalImageBase64={preprocessedData?.preview_base64}
+              onNavigateToXai={() => setCurrentPage('xai')}
+              onAnalyzeAnother={handleResetForNewScan}
+            />
+          )}
+
+          {currentPage === 'xai' && (
+            <XaiPage
+              prediction={predictionData}
+              originalImageBase64={preprocessedData?.preview_base64}
+              onUploadRedirect={() => setCurrentPage('upload')}
+            />
+          )}
+
+          {currentPage === 'history' && (
+            <HistoryPage
+              history={history}
+              onSelectHistoryItem={handleSelectHistoryItem}
+              onClearHistory={() => setHistory([])}
+              onNavigateToUpload={() => setCurrentPage('upload')}
+            />
+          )}
+
+          {currentPage === 'about' && (
+            <AboutPage />
+          )}
+        </main>
+      </div>
     </div>
   );
 }
